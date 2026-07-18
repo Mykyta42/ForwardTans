@@ -1,0 +1,7 @@
+<Solution>
+  <Configurations>
+    <Platform Name="x64" />
+    <Platform Name="x86" />
+  </Configurations>
+  <Project Path="MyCompressor/MyCompressor.vcxproj" Id="6dff1c5f-c84c-4625-8e75-e2bebe97e21e" />
+</Solution>
