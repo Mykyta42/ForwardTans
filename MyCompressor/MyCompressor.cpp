@@ -11,11 +11,9 @@
 #include <windows.h>
 #include <psapi.h>
 #include <queue>
-#include <functional>
 #include <iomanip>
 #include <filesystem>
 #include <cstdlib>
-#include <immintrin.h>
 
 using namespace std;
 
@@ -475,9 +473,7 @@ size_t Enthropy(const IndexedTokens& indexed)
 enum TokenizationMode {
     CHARWISE = 1,
     SPACES = 2,
-    WORDS = 3,
-    SPLIT_WORD = 4,
-    CSV = 5
+    WORDS = 3
 };
 
 enum Algorithm {
@@ -487,10 +483,7 @@ enum Algorithm {
     ARITHMETIC_FORWARD = 4,
     ARITHMETIC_BACKWARD = 5,
     HUFFMAN_CANONICAL = 6,
-    STATIC_ARITHMETIC = 7,
-    DEFAULT_TANS = 8,
-    HUFFMAN_FORWARD = 9,
-    HUFFMAN_BACKWARD = 10,
+    STATIC_ARITHMETIC = 7
 };
 uint64_t final_state;
 uint64_t input_size;
@@ -514,18 +507,16 @@ string readFile(const string& name) {
 
 
 
-void writeFile(const string& name, const vector<uint32_t>& data, const vector<string>& W, bool to_reverse) {
+void writeFile(const string& name, const vector<uint32_t>& data, const vector<string>& W) {
 
     ofstream f(name, ios::binary);
     if (!f) return;
     if (!data.empty()) {
         size_t totalLen = 0;
-        int start = 0, end = data.size(), inc = 1;
-        if (to_reverse) { start = end - 1, end = -1, inc = -1; }
-        for (int i = start; i != end; i += inc) totalLen += W[data[i]].size();
+        for (int i = 0; i != data.size(); i++) totalLen += W[data[i]].size();
         string F;
         F.reserve(totalLen);
-        for (int i = start; i != end; i += inc) F.append(W[data[i]]);
+        for (int i = 0; i != data.size(); i++) F.append(W[data[i]]);
         f.write(F.data(), totalLen);
     }
 
@@ -622,83 +613,11 @@ vector<string> tokenize_words(const string& text)
     return tokens;
 }
 
-vector<string> tokenize_split_words(const string& text)
-{
-    vector<string> tokens;
-
-    tokens.reserve(text.size() / 2 + 1);
-
-    size_t i = 0;
-    size_t n = text.size();
-
-    while (i < n)
-    {
-        size_t start = i;
-
-        if (isalnum((unsigned char)text[i]))
-        {
-            while (i < n && isalnum((unsigned char)text[i]))
-                i++;
-
-            string word = text.substr(start, i - start);
-
-            if (word.size() > 1)
-            {
-                tokens.push_back(string(1, word[0]));
-                tokens.push_back(word.substr(1));
-            }
-            else
-            {
-                tokens.push_back(word);
-            }
-        }
-        else if (isspace((unsigned char)text[i]))
-        {
-            while (i < n && isspace((unsigned char)text[i]))
-                i++;
-
-            tokens.push_back(text.substr(start, i - start));
-        }
-        else
-        {
-            tokens.push_back(string(1, text[i]));
-            i++;
-        }
-    }
-
-    return tokens;
-}
-
-vector<string> tokenize_csv(const string& text)
-{
-    vector<string> tokens;
-    size_t n = text.size();
-    tokens.reserve(n);
-    size_t i = 0;
-    string line;
-    for (char c : text)
-    {
-        if (c == '\n')
-        {
-            if (!line.empty()) tokens.push_back(line);
-            line.clear();
-        }
-        else
-        {
-            line += c;
-        }
-    }
-    if (!line.empty()) tokens.push_back(line);
-    return tokens;
-}
-
 vector<string> tokenize(const string& text, int mode) {
 
     if (mode == CHARWISE) return tokenize_charwise(text);
     if (mode == SPACES) return tokenize_space(text);
-    if (mode == WORDS) return tokenize_words(text);
-    if (mode == CSV) return tokenize_csv(text);
-    return tokenize_split_words(text);
+    return tokenize_words(text);
 }
 
 static inline uint64_t low_mask(int k)
@@ -1121,366 +1040,6 @@ EncodedData ArithmeticStatic(const IndexedTokens& data, const string& outFile) {
     return { data.dict, data.fs, bw.totalBits };
 }
 
-struct Node {
-    int symbol;
-    uint32_t weight;
-    int parent;
-    int left;
-    int right;
-};
-
-
-
-struct ForwardHuffman {
-    vector<Node> tree;
-    vector<uint32_t> leaf;
-    vector<uint32_t> weightids;
-
-    struct CompareWeight {
-        bool operator()(Node const& n1, Node const& n2) {
-            return n1.weight > n2.weight;
-        }
-    };
-
-    ForwardHuffman(const vector<uint32_t>& T, const vector<uint32_t>& freq) {
-        priority_queue<Node, vector<Node>, CompareWeight> pq;
-        int sigma = freq.size();
-        for (int i = 0; i < sigma; i++) {
-            pq.push({ i, freq[i], -1, -1, -1 });
-        }
-        leaf.assign(sigma, 0);
-        weightids.assign(T.size() + 1, -1);
-        while (pq.size() > 1) {
-            auto n1 = pq.top(); pq.pop();
-            auto n2 = pq.top(); pq.pop();
-            if (weightids[n1.weight] == -1) weightids[n1.weight] = tree.size();
-            if (n1.symbol >= 0)
-                leaf[n1.symbol] = tree.size();
-            else {
-                tree[n1.left].parent = tree.size();
-                tree[n1.right].parent = tree.size();
-            }
-            tree.push_back(n1);
-            if (weightids[n2.weight] == -1) weightids[n2.weight] = tree.size();
-            if (n2.symbol >= 0)
-                leaf[n2.symbol] = tree.size();
-            else {
-                tree[n2.left].parent = tree.size();
-                tree[n2.right].parent = tree.size();
-            }
-            tree.push_back(n2);
-            Node newNode = { -1, n1.weight + n2.weight, -1, tree.size() - 2, tree.size() - 1 };
-            pq.push(newNode);
-        }
-        if (sigma) {
-            tree.push_back(pq.top());
-            weightids[tree[tree.size() - 1].weight] = tree.size() - 1;
-        }
-        if (sigma > 1) {
-            tree[tree[tree.size() - 1].left].parent = tree.size() - 1;
-            tree[tree[tree.size() - 1].right].parent = tree.size() - 1;
-
-        }
-    }
-
-    pair<uint64_t, int> getCode(int s) {
-        uint64_t code = 0;
-        int len = 0;
-
-        int v = leaf[s];
-
-        while (tree[v].parent != -1) {
-            int p = tree[v].parent;
-
-            if (tree[p].right == v) {
-                code |= 1ULL << len;
-            }
-
-            len++;
-            v = p;
-        }
-
-        return { code, len };
-    }
-
-    void swapNodes(int a, int b)
-    {
-        int tmp;
-        tmp = tree[a].symbol; tree[a].symbol = tree[b].symbol; tree[b].symbol = tmp;
-        tmp = tree[a].left; tree[a].left = tree[b].left; tree[b].left = tmp;
-        tmp = tree[a].right; tree[a].right = tree[b].right; tree[b].right = tmp;
-
-        if (tree[a].symbol == -1) {
-            tree[tree[a].left].parent = a;
-            tree[tree[a].right].parent = a;
-        }
-        if (tree[b].symbol == -1) {
-            tree[tree[b].left].parent = b;
-            tree[tree[b].right].parent = b;
-        }
-
-        if (tree[a].symbol >= 0) leaf[tree[a].symbol] = a;
-        if (tree[b].symbol >= 0) leaf[tree[b].symbol] = b;
-    }
-
-    void update(int s) {
-        int node = leaf[s];
-        while (node != -1) {
-            int leader = weightids[tree[node].weight];
-            swapNodes(node, leader);
-            node = leader;
-            if (tree[node].parent != -1 && (tree[node + 1].weight == tree[node].weight)) weightids[tree[node].weight]++;
-            else weightids[tree[node].weight] = -1;
-            tree[node].weight--;
-            if (weightids[tree[node].weight] == -1) weightids[tree[node].weight] = node;
-            node = tree[node].parent;
-        }
-        if (!tree[leaf[s]].weight) {
-            int pt = tree[leaf[s]].parent;
-            int sib = tree[pt].right;
-            tree[pt].left = -1;
-            tree[pt].right = -1;
-            tree[pt].symbol = tree[sib].symbol;
-            leaf[tree[sib].symbol] = pt;
-            weightids[tree[sib].weight]++;
-        }
-    }
-};
-
-EncodedData HuffmanForward(const IndexedTokens& data,
-    const string& outFile)
-{
-    const vector<uint32_t>& T = data.ids;
-
-    ForwardHuffman h(T, data.fs);
-    ofstream out(outFile, ios::binary);
-    BitBuffer bw(out);
-    for (size_t i = 0; i + 1 < T.size(); i++) {
-        uint32_t s = T[i];
-        auto [code, len] = h.getCode(s);
-        bw.put_bits_msb(code, len);
-        h.update(s);
-    }
-
-    bw.finish();
-    input_size = T.size();
-    return { data.dict, data.fs, bw.totalBits };
-}
-
-
-struct BackwardHuffman {
-    vector<Node> tree;
-    vector<int> leaf;
-    int nyt;
-    int sigma;
-
-    BackwardHuffman(int sigma) {
-        tree.reserve(2 * sigma);
-
-        tree.push_back({ -2, 0, -1, -1, -1 });
-        nyt = 0;
-
-        leaf.assign(sigma, -1);
-        this->sigma = sigma;
-    }
-
-    pair<uint64_t, int> getCode(int v) {
-        uint64_t code = 0;
-        int len = 0;
-
-        while (tree[v].parent != -1) {
-            int p = tree[v].parent;
-            if (tree[p].right == v) {
-                code |= 1ULL << len;
-            }
-            len++;
-            v = p;
-        }
-
-        return { code, len };
-    }
-
-    void update(int node) {
-        while (node != -1) {
-            int leader = findLeader(node);
-            swapNodes(node, leader);
-            node = leader;
-            tree[node].weight++;
-            node = tree[node].parent;
-        }
-    }
-
-    int addSymbol(int s) {
-        int oldNYT = nyt;
-
-        int leafNode = tree.size();
-        int newNYT = tree.size() + 1;
-
-        tree.push_back({ s, 0, oldNYT, -1, -1 });
-        tree.push_back({ -2, 0, oldNYT, -1, -1 });
-
-        tree[oldNYT].symbol = -1;
-        tree[oldNYT].left = newNYT;
-        tree[oldNYT].right = leafNode;
-
-        nyt = newNYT;
-        leaf[s] = leafNode;
-
-        return leafNode;
-    }
-
-    int findLeader(int node) {
-        if (tree[node].parent == -1) return node;
-        int l = 1;
-        int r = node;
-        bool not_nyt_sib = !(tree[tree[node].parent].right == nyt || tree[tree[node].parent].left == nyt);
-        while (l < r) {
-            int mid = (l + r) >> 1;
-            if (tree[mid].weight == tree[node].weight && (not_nyt_sib || tree[mid].symbol >= 0)) {
-                r = mid;
-            }
-            else
-                l = mid + 1;
-        }
-        return l;
-    }
-
-    void swapNodes(int a, int b)
-    {
-        int tmp;
-        tmp = tree[a].symbol; tree[a].symbol = tree[b].symbol; tree[b].symbol = tmp;
-        tmp = tree[a].left; tree[a].left = tree[b].left; tree[b].left = tmp;
-        tmp = tree[a].right; tree[a].right = tree[b].right; tree[b].right = tmp;
-
-        if (tree[a].symbol == -1) {
-            tree[tree[a].left].parent = a;
-            tree[tree[a].right].parent = a;
-        }
-        if (tree[b].symbol == -1) {
-            tree[tree[b].left].parent = b;
-            tree[tree[b].right].parent = b;
-        }
-
-        if (tree[a].symbol >= 0) leaf[tree[a].symbol] = a;
-        if (tree[b].symbol >= 0) leaf[tree[b].symbol] = b;
-    }
-};
-
-
-
-EncodedData HuffmanBackward(const IndexedTokens& data,
-    const string& outFile)
-{
-    const vector<uint32_t>& T = data.ids;
-    int sigma = data.dict.size();
-    BackwardHuffman h(sigma);
-    ofstream out(outFile, ios::binary);
-    BitBuffer bw(out);
-
-    int rawBits = clz64(sigma);
-
-    for (uint32_t s : T) {
-        if (h.leaf[s] == -1) {
-            auto [code, len] = h.getCode(h.nyt);
-            bw.put_bits_msb(code, len);
-            bw.put_bits_msb(s, rawBits);
-            int node = h.addSymbol(s);
-            h.update(node);
-        }
-        else {
-            int node = h.leaf[s];
-            auto [code, len] = h.getCode(node);
-            bw.put_bits_msb(code, len);
-            h.update(node);
-        }
-    }
-
-    bw.finish();
-    input_size = T.size();
-    return { data.dict, data.fs, bw.totalBits };
-}
-
-struct HuffCode {
-    uint32_t code;
-    int len;
-};
-
-vector<int> build_lengths(const vector<int>& freq) {
-    struct Node {
-        int freq;
-        int left, right;
-        int symbol;
-    };
-
-    int n = freq.size();
-
-    priority_queue<pair<int, int>, vector<pair<int, int>>, greater<>> pq;
-    vector<Node> nodes;
-
-    for (int i = 0; i < n; i++) {
-        if (freq[i] > 0) {
-            nodes.push_back({ freq[i], -1, -1, i });
-            pq.push({ freq[i], (int)nodes.size() - 1 });
-        }
-    }
-
-    if (pq.size() == 1) {
-        vector<int> len(n, 0);
-        len[nodes[pq.top().second].symbol] = 1;
-        return len;
-    }
-
-    while (pq.size() > 1) {
-        auto [f1, i1] = pq.top(); pq.pop();
-        auto [f2, i2] = pq.top(); pq.pop();
-
-        nodes.push_back({ f1 + f2, i1, i2, -1 });
-        pq.push({ f1 + f2, (int)nodes.size() - 1 });
-    }
-
-    int root = pq.top().second;
-
-    vector<int> length(n, 0);
-
-    function<void(int, int)> dfs = [&](int v, int depth) {
-        if (nodes[v].symbol != -1) {
-            length[nodes[v].symbol] = depth;
-            return;
-        }
-        dfs(nodes[v].left, depth + 1);
-        dfs(nodes[v].right, depth + 1);
-        };
-
-    dfs(root, 0);
-
-    return length;
-}
-
-vector<HuffCode> build_codes(const vector<int>& length) {
-    int n = length.size();
-
-    vector<pair<int, int>> order;
-    for (int i = 0; i < n; i++) {
-        if (length[i] > 0)
-            order.emplace_back(length[i], i);
-    }
-
-    sort(order.begin(), order.end());
-
-    vector<HuffCode> codes(n);
-
-    uint32_t code = 0;
-    int prev_len = 0;
-
-    for (auto [len, sym] : order) {
-        code <<= (len - prev_len);
-        codes[sym] = { code, len };
-        code++;
-        prev_len = len;
-    }
-
-    return codes;
-}
 
 EncodedData HuffmanCanonical(const IndexedTokens& data, const string& baseName)
 {
@@ -1516,25 +1075,66 @@ EncodedData UniformTans(const IndexedTokens& T, const string& outFile) {
     uint64_t f = T.fs.size();
     uint64_t cumulativeFreq = 0;
     vector<uint64_t> c(f);
-    vector<uint64_t> I(n);
+    vector<uint64_t> fn(f);
+    int L;
 
     auto cmp = [&](const pair<uint64_t, uint64_t>& left, const pair<uint64_t, uint64_t>& right) {
-        uint64_t lden = max(1, T.fs[left.second]);
-        uint64_t rden = max(1, T.fs[right.second]);
+        uint64_t lden = fn[left.second];
+        uint64_t rden = fn[right.second];
 		return static_cast<float>(2 * left.first + 1) / (2 * lden) > static_cast<float>(2 * right.first + 1) / (2 * rden); // Duda's version with float division to avoid overflow
         };
 
     priority_queue<pair<uint64_t, uint64_t>, vector<pair<uint64_t, uint64_t>>, decltype(cmp)> q(cmp);
 
-    for (size_t i = 0; i < f; ++i) {
-        c[i] = cumulativeFreq;
-        cumulativeFreq += T.fs[i];
+	if (f <= 256) {
+		vector<int> idx(f);
+		L = 1 << 12;
+        int norm_n = 0;
+        for (int i = 0; i < f; ++i) {
+            fn[i] = max(1, T.fs[i] * L / n);
+            idx[i] = i;
+            norm_n += fn[i];
+        }
+
+        sort(idx.begin(), idx.end(), [&](int a, int b) {
+            return fn[a] > fn[b];
+            });
+
+        int i = 0;
+        while (norm_n < L) {
+            fn[idx[i]]++;
+            norm_n++;
+            i++;
+            if (i == f) i = 0;
+        }
+        while (norm_n > L) {
+            if (fn[idx[i]] > 1) fn[idx[i]]--;
+            norm_n--;
+            i++;
+            if (i == f) i = 0;
+        }
+
+        for (size_t i = 0; i < f; ++i) {
+            c[i] = cumulativeFreq;
+            cumulativeFreq += fn[i];
+        }
+	}
+
+    else {
+        L = n;
+        for (size_t i = 0; i < f; ++i) {
+            c[i] = cumulativeFreq;
+            cumulativeFreq += T.fs[i];
+			fn[i] = T.fs[i];
+        }
+        
     }
+    vector<uint64_t> I(L);
 
     for (uint64_t i = 0; i < f; ++i)
         q.push({ 0, i });
 
-    for (uint64_t i = 0; i < n; i++) {
+    for (uint64_t i = 0; i < L; i++) {
         auto p = q.top(); q.pop();
         I[c[p.second] + p.first] = i;
         q.push({ p.first + 1, p.second });
@@ -1542,12 +1142,12 @@ EncodedData UniformTans(const IndexedTokens& T, const string& outFile) {
     ofstream out(outFile, ios::binary);
     uint64_t bitCount = 0;
     out.write((char*)&bitCount, sizeof(uint64_t));
-    uint64_t x = n;
+    uint64_t x = L;
     BitBuffer bw(out);
     for (uint64_t i = 0; i < n; i++) {
         uint64_t idx = T.ids[i];
-        renorm_and_put(x, 2 * T.fs[idx], bw);
-        x = n + I[c[idx] + x - T.fs[idx]];
+        renorm_and_put(x, 2 * fn[idx], bw);
+        x = L + I[c[idx] + x - fn[idx]];
     }
     bw.finish();
     bitCount = bw.totalBits;
@@ -1558,42 +1158,7 @@ EncodedData UniformTans(const IndexedTokens& T, const string& outFile) {
     return { T.dict, T.fs, bw.totalBits };
 }
 
-EncodedData DefaultTans(const IndexedTokens& T, const string& outFile) {
 
-    uint64_t n = T.ids.size();
-    uint64_t f = T.fs.size();
-    uint64_t cumulativeFreq = 0;
-    vector<uint64_t> c(f);
-    vector<uint64_t> I(n);
-    vector<uint64_t> pos(f, 0);
-
-    for (size_t i = 0; i < f; ++i) {
-        c[i] = cumulativeFreq;
-        cumulativeFreq += T.fs[i];
-    }
-
-    for (uint64_t i = n; i > 0; i--) {
-        int idx = T.ids[i - 1];
-        I[c[idx] + pos[idx]] = n - i;
-        pos[idx]++;
-    }
-
-    ofstream out(outFile, ios::binary);
-    uint64_t x = n;
-    BitBuffer bw(out);
-    uint64_t bitCount = 0;
-    out.write((char*)&bitCount, sizeof(uint64_t));
-    for (uint64_t i = 0; i < n; i++) {
-        uint64_t idx = T.ids[i];
-        renorm_and_put(x, 2 * T.fs[idx], bw);
-        x = n + I[c[idx] + x - T.fs[idx]];
-    }
-    bw.finish();
-    bitCount = bw.totalBits;
-    out.seekp(0);
-    out.write((char*)&bitCount, sizeof(uint64_t));
-    return { T.dict, T.fs, bw.totalBits };
-}
 
 
 EncodedData ForwardTans(const IndexedTokens& T, const string& outFile) {
@@ -1646,77 +1211,153 @@ EncodedData ForwardTans(const IndexedTokens& T, const string& outFile) {
     out.write((char*)&bitCount, sizeof(uint64_t));
     return { T.dict, T.fs, bw.totalBits };
 }
+EncodedData RangedTans(const IndexedTokens& T,
+    const string& outFile)
+{
+    const uint64_t n = T.ids.size();
+    const uint64_t sigma = T.fs.size();
 
-EncodedData RangedTans(const IndexedTokens& T, const string& outFile) {
-    uint64_t n = T.ids.size();
-    uint64_t f = T.fs.size();
-    uint64_t cumulativeFreq = 0;
-    vector<uint64_t> c(f);
-    vector<uint64_t> pos(f, 0);
-    for (size_t i = 0; i < f; ++i) {
-        c[i] = cumulativeFreq;
-        cumulativeFreq += T.fs[i];
+    if (n == 0)
+        return { T.dict, T.fs, 0 };
+
+
+    vector<uint64_t> c(sigma);
+    uint64_t total = 0;
+
+    for (uint64_t a = 0; a < sigma; ++a) {
+        c[a] = total;
+        total += T.fs[a];
     }
 
     ofstream out(outFile, ios::binary);
-    uint64_t x = n;
-    BitBuffer bw(out);
+
+
     uint64_t bitCount = 0;
-    out.write((char*)&bitCount, sizeof(uint64_t));
-    for (uint64_t i = 0; i < n; i++) {
-        uint64_t idx = T.ids[i];
-        renorm_and_put(x, 2 * T.fs[idx], bw);
-        x = n + c[idx] + x - T.fs[idx];
+    out.write(
+        reinterpret_cast<const char*>(&bitCount),
+        sizeof(bitCount));
+
+    uint64_t x = n;
+    uint64_t byteCount = 0;
+
+    for (uint64_t i = 0; i < n; ++i) {
+        const uint64_t a = T.ids.at(i);
+
+
+        const uint64_t freq = T.fs.at(a);
+        const uint64_t threshold = 256ULL * freq;
+
+        while (x >= threshold) {
+            const uint8_t byte =
+                static_cast<uint8_t>(x & 0xFFULL);
+
+            out.write(
+                reinterpret_cast<const char*>(&byte), 1);
+
+            ++byteCount;
+            x >>= 8;
+        }
+
+        const uint64_t quotient = x / freq;
+        const uint64_t remainder = x % freq;
+
+        x = n * quotient + c[a] + remainder;
+
     }
-    bw.finish();
-    bitCount = bw.totalBits;
+
+    bitCount = 8 * byteCount;
     final_state = x;
-    out.seekp(0);
     input_size = n;
-    out.write((char*)&bitCount, sizeof(uint64_t));
-    return { T.dict, T.fs, bw.totalBits };
+
+    out.seekp(0, ios::beg);
+    out.write(
+        reinterpret_cast<const char*>(&bitCount),
+        sizeof(bitCount));
+
+
+    out.close();
+
+    return { T.dict, T.fs, bitCount };
 }
 
 EncodedData encode(const IndexedTokens& indexed, int algorithm, const string& codeFile)
 {
     if (algorithm == UNIFORM_TANS) return UniformTans(indexed, codeFile);
-    if (algorithm == DEFAULT_TANS) return DefaultTans(indexed, codeFile);
     if (algorithm == RANGED_TANS) return RangedTans(indexed, codeFile);
     if (algorithm == ARITHMETIC_FORWARD) return ArithmeticForward(indexed, codeFile);
     if (algorithm == ARITHMETIC_BACKWARD) return ArithmeticBackward(indexed, codeFile);
-    if (algorithm == HUFFMAN_FORWARD) return HuffmanForward(indexed, codeFile);
-    if (algorithm == HUFFMAN_BACKWARD) return HuffmanBackward(indexed, codeFile);
     if (algorithm == HUFFMAN_CANONICAL) return HuffmanCanonical(indexed, codeFile);
     if (algorithm == STATIC_ARITHMETIC) return ArithmeticStatic(indexed, codeFile);
     return ForwardTans(indexed, codeFile);
 }
 
 vector<uint32_t> UANSdecode(const EncodedData& data, const string& baseName) {
-
     uint64_t n = input_size;
     uint64_t f = data.freq.size();
     uint64_t cumulativeFreq = 0;
     vector<uint64_t> c(f);
-    vector<pair<uint64_t, uint64_t>> I(n);
-    vector <uint32_t> tokensids;
+	vector<uint64_t> fn(f);
+    int L;
+    vector <uint32_t> tokensids(n);
 
     auto cmp = [&](const pair<uint64_t, uint64_t>& left, const pair<uint64_t, uint64_t>& right) {
-        uint64_t lden = max(1, data.freq[left.second]);
-        uint64_t rden = max(1, data.freq[right.second]);
+        uint64_t lden = fn[left.second];
+        uint64_t rden = fn[right.second];
         return static_cast<float>(2 * left.first + 1) / (2 * lden) > static_cast<float>(2 * right.first + 1) / (2 * rden);
         };
 
     priority_queue<pair<uint64_t, uint64_t>, vector<pair<uint64_t, uint64_t>>, decltype(cmp)> q(cmp);
 
-    for (size_t i = 0; i < f; ++i) {
-        c[i] = cumulativeFreq;
-        cumulativeFreq += data.freq[i];
+    if (f <= 256) {
+        vector<int> idx(f);
+        L = 1 << 12;
+        int norm_n = 0;
+        for (int i = 0; i < f; ++i) {
+            fn[i] = max(1, data.freq[i] * L / n);
+            idx[i] = i;
+            norm_n += fn[i];
+        }
+
+        sort(idx.begin(), idx.end(), [&](int a, int b) {
+            return fn[a] > fn[b];
+            });
+
+        int i = 0;
+        while (norm_n < L) {
+            fn[idx[i]]++;
+            norm_n++;
+            i++;
+            if (i == f) i = 0;
+        }
+        while (norm_n > L) {
+            if (fn[idx[i]] > 1) fn[idx[i]]--;
+            norm_n--;
+            i++;
+            if (i == f) i = 0;
+        }
+
+        for (size_t i = 0; i < f; ++i) {
+            c[i] = cumulativeFreq;
+            cumulativeFreq += fn[i];
+        }
     }
+
+    else {
+		L = n;
+        for (size_t i = 0; i < f; ++i) {
+            c[i] = cumulativeFreq;
+            cumulativeFreq += data.freq[i];
+            fn[i] = data.freq[i];
+        }
+
+    }
+
+    vector<pair<uint64_t, uint64_t>> I(L);
 
     for (uint64_t i = 0; i < f; ++i)
         q.push({ 0, i });
 
-    for (uint64_t i = 0; i < n; i++) {
+    for (uint64_t i = 0; i < L; i++) {
         auto p = q.top(); q.pop();
         I[i] = { p.first, p.second };
         q.push({ p.first + 1, p.second });
@@ -1724,59 +1365,83 @@ vector<uint32_t> UANSdecode(const EncodedData& data, const string& baseName) {
     BitReader br(baseName + ".code", data.bitCount);
     uint64_t x = final_state;
     for (uint64_t i = 0; i < n; i++) {
-        uint64_t tokenIndex = I[x - n].second;
-        x = I[x - n].first + data.freq[tokenIndex];
-        tokensids.emplace_back(tokenIndex);
-        renorm_and_get(x, n, br);
+        uint64_t tokenIndex = I[x - L].second;
+        x = I[x - L].first + fn[tokenIndex];
+        tokensids[n - 1 - i] = tokenIndex;
+        renorm_and_get(x, L, br);
     }
     return tokensids;
 }
 
+
 vector<uint32_t> RANSdecode(const EncodedData& data, const string& baseName) {
 
-    uint64_t n = input_size;
-    uint64_t f = data.freq.size();
-    uint64_t cumulativeFreq = 0;
-    vector<pair<uint64_t, uint64_t>> I(n);
-    vector <uint32_t> tokensids;
+    const uint64_t n = input_size;
+    const uint64_t sigma = data.freq.size();
+    constexpr uint64_t B = 256;
+    if (n == 0)
+        return {};
 
-    for (uint64_t i = 0; i < f; i++) {
-        for (uint64_t j = 0; j < data.freq[i]; j++) {
-            I[cumulativeFreq + j] = { j, i };
+    vector<uint64_t> c(sigma);
+    vector<uint32_t> symbolOf(n);
+
+    uint64_t cumulativeFreq = 0;
+
+    for (uint64_t a = 0; a < sigma; ++a) {
+        c[a] = cumulativeFreq;
+
+        for (uint64_t j = 0; j < data.freq[a]; ++j) {
+            symbolOf[cumulativeFreq + j] =
+                static_cast<uint32_t>(a);
         }
-        cumulativeFreq += data.freq[i];
+
+        cumulativeFreq += data.freq[a];
     }
+
+    const uint64_t L = n;
+
     BitReader br(baseName + ".code", data.bitCount);
     uint64_t x = final_state;
-    for (uint64_t i = 0; i < n; i++) {
-        uint64_t tokenIndex = I[x - n].second;
-        x = I[x - n].first + data.freq[tokenIndex];
-        tokensids.emplace_back(tokenIndex);
-        renorm_and_get(x, n, br);
+
+    vector<uint32_t> result(n);
+    
+    for (uint64_t i = 0; i < n; ++i) {
+        const uint64_t slot = x % n;
+        const uint32_t a = symbolOf[slot];
+
+        result[n - 1 - i] = a;
+
+        x = static_cast<uint64_t>(data.freq[a]) * (x / n)
+            + slot - c[a];
+
+        while (x < L) {
+            x = (x << 8) | br.peekBits(8);
+        }
+
     }
-    return tokensids;
+
+    return result;
 }
 
 vector<uint32_t> FANSdecode(const EncodedData& data, const string& baseName) {
     BitReader br(baseName + ".code", data.bitCount);
     const vector<string>& W = data.dictionary;
+	int n = input_size;
     uint64_t x = 1;
     uint64_t l = 1;
     uint64_t offset = 0;
 
-    vector<pair<uint64_t, uint64_t>> P;
-    P.reserve(16384);
+    vector<pair<uint64_t, uint64_t>> P(n+W.size());
 
     vector<uint64_t> f(W.size(), 0);
-    vector<uint32_t> tokensids;
-    tokensids.reserve(16384);
-    while (x >= l) {
+    vector<uint32_t> tokensids(n);
+    for (int i = 0; i < n; i++) {
         if (x - l == l - 1 || P[x - l].first == 0) {
             P.emplace_back(0, offset);
             P.emplace_back(offset + 1, 0);
 
             f[offset] = 1;
-            tokensids.emplace_back(offset);
+            tokensids[n - 1 - i] = offset;
             offset++;
 
             x = offset + P[x - l].second;
@@ -1788,7 +1453,7 @@ vector<uint32_t> FANSdecode(const EncodedData& data, const string& baseName) {
 
             P.emplace_back(P[x - l].first, f[tokenIndex]);
 
-            tokensids.emplace_back(tokenIndex);
+            tokensids[n - 1 - i] = tokenIndex;
             x = f[tokenIndex] + P[x - l].second;
             f[tokenIndex]++;
             l++;
@@ -1807,16 +1472,27 @@ void writeCompressed(const string& baseName,
     {
         ofstream out(baseName + ".dict", ios::binary);
 
-        int dictSize = data.dictionary.size();
+        int dictSize = (int)data.dictionary.size();
 
         out.write((char*)&dictSize, sizeof(int));
         out.write((char*)&mode, sizeof(int));
 
+        bool used[256] = {};
+
+        for (const auto& w : data.dictionary)
+            for (unsigned char c : w)
+                used[c] = true;
+
+        unsigned char delim = 0;
+        while (delim < 255 && used[delim])
+            ++delim;
+
+        out.write((char*)&delim, 1);
+
         for (const auto& w : data.dictionary)
         {
-            int len = w.size();
-            out.write((char*)&len, sizeof(int));
-            out.write(w.data(), len);
+            out.write(w.data(), w.size());
+            out.put((char)delim);
         }
     }
 
@@ -1824,7 +1500,7 @@ void writeCompressed(const string& baseName,
     {
         ofstream out(baseName + ".freq", ios::binary);
 
-        int size = data.freq.size();
+        int size = (int)data.freq.size();
         out.write((char*)&size, sizeof(int));
 
         for (uint32_t f : data.freq)
@@ -1846,15 +1522,25 @@ EncodedData readCompressed(const string& baseName, int& mode)
         in.read((char*)&dictSize, sizeof(int));
         in.read((char*)&mode, sizeof(int));
 
-        dict.resize(dictSize);
+        unsigned char delim;
+        in.read((char*)&delim, 1);
 
-        for (int i = 0; i < dictSize; i++)
+        dict.reserve(dictSize);
+
+        string cur;
+        char ch;
+
+        while ((int)dict.size() < dictSize && in.get(ch))
         {
-            int len;
-            in.read((char*)&len, sizeof(int));
-
-            dict[i].resize(len);
-            in.read(&dict[i][0], len);
+            if ((unsigned char)ch == delim)
+            {
+                dict.push_back(std::move(cur));
+                cur.clear();
+            }
+            else
+            {
+                cur.push_back(ch);
+            }
         }
     }
 
@@ -1930,8 +1616,7 @@ vector<uint32_t> FACdecode(const EncodedData& data, const string& baseName)
         }
         };
 
-    vector<uint32_t> result;
-    result.reserve(1024);
+    vector<uint32_t> result(n);
 
     for (int i = 0; i < n; i++)
     {
@@ -1955,7 +1640,7 @@ vector<uint32_t> FACdecode(const EncodedData& data, const string& baseName)
             s = s1;
         }
 
-        result.push_back(s);
+        result[i] = s;
 
         uint64_t lowCum = fw.sum(s1 - 1);
         uint64_t highCum = fw.sum(s1);
@@ -2015,8 +1700,7 @@ vector<uint32_t> BACdecode(const EncodedData& data, const string& baseName)
         }
         };
 
-    vector<uint32_t> result;
-    result.reserve(1024);
+    vector<uint32_t> result(n);
 
     for (int i = 0; i < n; i++)
     {
@@ -2029,7 +1713,7 @@ vector<uint32_t> BACdecode(const EncodedData& data, const string& baseName)
 
         int s = fw.find(scaled);
 
-        result.push_back(s);
+        result[i] = s;
 
         uint64_t lowCum = fw.sum(s - 1);
         uint64_t highCum = fw.sum(s);
@@ -2088,9 +1772,8 @@ vector<uint32_t> SACdecode(const EncodedData& data, const string& baseName)
         }
         };
 
-    vector<uint32_t> result;
-    result.reserve(1024);
     int n = fw.total;
+    vector<uint32_t> result(n);
     for (int i = 0; i < n; i++)
     {
         uint64_t total = fw.total;
@@ -2103,7 +1786,7 @@ vector<uint32_t> SACdecode(const EncodedData& data, const string& baseName)
         int s = fw.find(scaled);
 
 
-        result.push_back(s);
+        result[i] = s;
 
         uint64_t lowCum = fw.sum(s - 1);
         uint64_t highCum = fw.sum(s);
@@ -2160,13 +1843,10 @@ vector<uint32_t> HuffmanCanonicaldecode(const EncodedData& data, const string& b
 string algorithmName(int algorithm)
 {
     if (algorithm == UNIFORM_TANS) return "Uniform Tans";
-    if (algorithm == DEFAULT_TANS) return "Default Tans";
     if (algorithm == RANGED_TANS) return "Ranged Tans";
     if (algorithm == FORWARD_TANS) return "Forward Tans";
     if (algorithm == ARITHMETIC_FORWARD) return "Arithmetic Forward";
     if (algorithm == ARITHMETIC_BACKWARD) return "Arithmetic Backward";
-    if (algorithm == HUFFMAN_FORWARD) return "Huffman Forward";
-    if (algorithm == HUFFMAN_BACKWARD) return "Huffman Backward";
     if (algorithm == HUFFMAN_CANONICAL) return "Huffman Canonical";
     if (algorithm == STATIC_ARITHMETIC) return "Static Arithmetic";
     return "Unknown";
@@ -2533,9 +2213,7 @@ void printUsage()
 {
     cout << "Usage: MyCompressor <command> <input> [mode] [compression_algorithm]\n";
     cout << "Commands:\n";
-    cout << "  compress <input> <mode> <algorithm>\n";
-    cout << "  decompress <input.arc>\n";
-    cout << "  benchmark <input> <mode> <compression_algorithm>\n";
+    cout << "  benchmark runs specified compression algorithm and mode\n";
     cout << "  benchmark-xlsx [files.csv] [benchmark.xlsx]\n";
     cout << "    Reads filenames from files.csv, runs all methods for modes 1-3,\n";
     cout << "    and writes an Excel workbook with one sheet per tokenization type.\n";
@@ -2543,8 +2221,6 @@ void printUsage()
     cout << "  1 - Character-wise tokenization\n";
     cout << "  2 - Space-based tokenization\n";
     cout << "  3 - Word-based tokenization\n";
-    cout << "  4 - Split word tokenization\n";
-    cout << "  5 - One column CSV tokenization\n";
     cout << "Compression algorithms:\n";
     for (int a = UNIFORM_TANS; a <= STATIC_ARITHMETIC; a++)
         cout << "  " << a << " - " << algorithmName(a) << "\n";
@@ -2643,72 +2319,7 @@ int main(int argc, char* argv[]) {
         return 0;
     }
 
-    if (cmd == "compress") {
-        if (argc < 5) {
-            printUsage();
-            return 1;
-        }
-        string input = argv[2];
-        int mode = stoi(argv[3]);
-        int algorithm = stoi(argv[4]);
-        uint64_t textSize;
-        string output = makeCompressedName(input);
-        string codeFile = output + ".code";
-        EncodedData data;
-        IndexedTokens indexed;
-        {
-            string text = readFile(input);
-            textSize = text.size();
-            auto tokens = tokenize(text, mode);
-            indexed = (algorithm == FORWARD_TANS || algorithm == ARITHMETIC_FORWARD) ? buildIndexLast(tokens) : buildIndexSort(tokens);
-        }
-        float time = 0.0;
-        for (int i = 0; i < N; i++) {
-            auto start = chrono::high_resolution_clock::now();
-            data = encode(indexed, algorithm, codeFile);
-            auto end = std::chrono::high_resolution_clock::now();
-            time += chrono::duration_cast<chrono::milliseconds>(end - start).count();
-        }
-        writeCompressed(output, data, mode);
-        cout << "Compressed to " << output << "\n";
-        cout << "Average compression time: " << time / (1000 * N) << " s\n";
-        cout << "Original size: " << textSize << " bytes\n";
-        cout << "Enthropy: " << Enthropy(indexed) << " bytes\n";
-        cout << "Estimated compressed size: " << compressedSize(data) << " bytes\n";
-        cout << "Memory usage: " << getMemoryUsage() / 1024 << " KB\n";
-    }
-
-    else if (cmd == "decompress") {
-        if (argc < 3) {
-            printUsage();
-            return 1;
-        }
-        string input = argv[2];
-        int mode;
-        EncodedData data = readCompressed(input, mode);
-        int N = 1;
-        float time = 0.0;
-        vector<uint32_t> ids;
-        //int algo = (argc >= 4) ? stoi(argv[3]) : -1;
-        // для безопасности: ветка ручного выбора декодера закомментирована
-        for (int i = 0; i < N; i++) {
-            auto start = chrono::high_resolution_clock::now();
-            //if (algo == FAST_HUFFMAN) {
-            //    ids = decode_fast_huffman(data, input);
-            //} else {
-                ids = FANSdecode(data, input);
-            //}
-            auto end = chrono::high_resolution_clock::now();
-            time += chrono::duration_cast<chrono::milliseconds>(end - start).count();
-        }
-        string output = makeDecompressedName(input);
-        writeFile(output, ids, data.dictionary, true);
-        cout << "Decompressed to " << output << "\n";
-        cout << "Decompression time: " << time / (1000 * N) << " s\n";
-        cout << "Memory usage: " << getMemoryUsage() / 1024 << " KB\n";
-    }
-
-    else if (cmd == "benchmark") {
+    if (cmd == "benchmark") {
         if (argc < 5) {
             cout << "Usage: MyCompressor benchmark <input> <mode> <compression_algorithm>\n";
             return 0;
@@ -2743,8 +2354,7 @@ int main(int argc, char* argv[]) {
             vector<uint32_t> ids = decodeByAlgorithm(readData, output, algorithm);
             auto t3 = chrono::high_resolution_clock::now();
             string decOut = makeDecompressedName(output);
-            writeFile(decOut, ids, readData.dictionary,
-                algorithm == UNIFORM_TANS || algorithm == RANGED_TANS || algorithm == FORWARD_TANS);
+            writeFile(decOut, ids, readData.dictionary);
             decompTime = chrono::duration_cast<chrono::milliseconds>(t3 - t2).count() / 1000.0;
             compare(indexed.ids, ids);
         }
@@ -2752,7 +2362,7 @@ int main(int argc, char* argv[]) {
         cout << "  Original size: " << textSize << " bytes\n";
         uint64_t codeBytes = compressedSize(data) + 8 + ((algorithm == HUFFMAN_CANONICAL || algorithm == ARITHMETIC_BACKWARD || algorithm == UNIFORM_TANS || algorithm == RANGED_TANS) ? 8 : 0); // add bitcount and original size of input or final state, if neccesary
         uint64_t dictPpmdBytes = compressWith7zPPMd(output + ".dict");
-        uint64_t freqPpmdBytes = compressWith7zPPMd(output + ((algorithm == HUFFMAN_CANONICAL) ? ".tbl" : ".freq"));
+        uint64_t freqPpmdBytes = compressWith7zPPMd(output + ((algorithm == HUFFMAN_CANONICAL) ? "code.tbl" : ".freq"));
         cout << "  Code size: " << codeBytes << " bytes\n";
         cout << "  Dictionary size after 7-Zip PPMd -mx=9: " << dictPpmdBytes << " bytes\n";
         cout << "  " << ((algorithm == HUFFMAN_CANONICAL) ? "Code" : "Frequency") << " table size after 7 - Zip PPMd - mx = 9: " << freqPpmdBytes << " bytes\n";
