@@ -1207,6 +1207,7 @@ EncodedData ForwardTans(const IndexedTokens& T, const string& outFile) {
     bw.finish();
     bitCount = bw.totalBits;
     final_state = x;
+	input_size = n;
     out.seekp(0);
     out.write((char*)&bitCount, sizeof(uint64_t));
     return { T.dict, T.fs, bw.totalBits };
@@ -1432,13 +1433,12 @@ vector<uint32_t> FANSdecode(const EncodedData& data, const string& baseName) {
     uint64_t offset = 0;
 
     vector<pair<uint64_t, uint64_t>> P(n+W.size());
-
     vector<uint64_t> f(W.size(), 0);
     vector<uint32_t> tokensids(n);
     for (int i = 0; i < n; i++) {
         if (x - l == l - 1 || P[x - l].first == 0) {
-            P.emplace_back(0, offset);
-            P.emplace_back(offset + 1, 0);
+            P[i + offset] = { 0, offset };
+            P[i + offset + 1] = { offset + 1, 0 };
 
             f[offset] = 1;
             tokensids[n - 1 - i] = offset;
@@ -1451,7 +1451,7 @@ vector<uint32_t> FANSdecode(const EncodedData& data, const string& baseName) {
         else {
             uint64_t tokenIndex = P[x - l].first - 1;
 
-            P.emplace_back(P[x - l].first, f[tokenIndex]);
+            P[i + offset] = { P[x - l].first, f[tokenIndex] };
 
             tokensids[n - 1 - i] = tokenIndex;
             x = f[tokenIndex] + P[x - l].second;
