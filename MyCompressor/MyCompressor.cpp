@@ -483,7 +483,8 @@ enum Algorithm {
     ARITHMETIC_FORWARD = 4,
     ARITHMETIC_BACKWARD = 5,
     HUFFMAN_CANONICAL = 6,
-    STATIC_ARITHMETIC = 7
+    STATIC_ARITHMETIC = 7,
+	PPMC = 8
 };
 uint64_t final_state;
 uint64_t input_size;
@@ -971,6 +972,166 @@ EncodedData ArithmeticForward(const IndexedTokens& data,
     return { data.dict, data.fs, bw.totalBits };
 }
 
+EncodedData ArithmeticPPMC(
+    const IndexedTokens& data,
+    const string& outFile)
+{
+
+    const vector<uint32_t>& T = data.ids;
+    const int sigma = data.fs.size();
+
+    vector<uint32_t> count(sigma, 0);
+
+    Fenwick fw(sigma + 1);
+
+    fw.add(sigma, 1);
+
+    uint32_t distinct = 0;
+
+    ofstream out(outFile, ios::binary);
+    BitBuffer bw(out);
+    uint64_t bitCount = 0;
+    out.write((char*)&bitCount, sizeof(uint64_t));
+
+    const uint64_t TOP = 0xFFFFFFFFULL;
+    const uint64_t HALF = 1ULL << 31;
+    const uint64_t QUARTER = 1ULL << 30;
+
+    uint64_t low = 0;
+    uint64_t high = TOP;
+    uint64_t pending = 0;
+
+    auto output_bit = [&](int bit)
+        {
+            bw.put_bits_msb(bit, 1);
+
+            while (pending != 0)
+            {
+                bw.put_bits_msb(!bit, 1);
+                --pending;
+            }
+        };
+
+    auto renorm = [&]()
+        {
+            while (true)
+            {
+                if (high < HALF)
+                {
+                    output_bit(0);
+                }
+                else if (low >= HALF)
+                {
+                    output_bit(1);
+
+                    low -= HALF;
+                    high -= HALF;
+                }
+                else if (low >= QUARTER &&
+                    high < 3 * QUARTER)
+                {
+                    ++pending;
+
+                    low -= QUARTER;
+                    high -= QUARTER;
+                }
+                else
+                {
+                    break;
+                }
+
+                low <<= 1;
+                high = (high << 1) | 1;
+            }
+        };
+
+    auto encode_range =
+        [&](uint64_t lowCum,
+            uint64_t highCum,
+            uint64_t total)
+        {
+            const uint64_t range = high - low + 1;
+
+            high = low +
+                (range * highCum) / total - 1;
+
+            low = low +
+                (range * lowCum) / total;
+
+            renorm();
+        };
+
+    for (uint32_t symbol : T)
+    {
+        if (count[symbol] != 0)
+        {
+            const uint64_t total = fw.total;
+
+            const uint64_t lowCum =
+                fw.sum(symbol - 1);
+
+            const uint64_t highCum =
+                fw.sum(symbol);
+
+            encode_range(
+                lowCum,
+                highCum,
+                total);
+
+            ++count[symbol];
+            fw.add(symbol, 1);
+        }
+        else
+        {
+            const uint64_t total = fw.total;
+
+            const uint64_t escLow =
+                fw.sum(sigma - 1);
+
+            const uint64_t escHigh =
+                fw.sum(sigma);
+
+            encode_range(
+                escLow,
+                escHigh,
+                total);
+           
+
+            encode_range(
+                symbol,
+                symbol + 1,
+                sigma);
+
+            count[symbol] = 1;
+            fw.add(symbol, 1);
+
+            ++distinct;
+
+            fw.add(sigma, 1);
+        }
+    }
+
+    ++pending;
+    output_bit(low < QUARTER ? 0 : 1);
+
+    for (int i = 0; i < 32; ++i)
+        bw.put_bits_msb(0, 1);
+
+    bw.finish();
+
+    bitCount = bw.totalBits;
+    input_size = T.size();
+    out.seekp(0);
+    out.write((char*)&bitCount, sizeof(uint64_t));
+
+    return {
+        data.dict,
+        data.fs,
+        bw.totalBits
+    };
+}
+
+
 EncodedData ArithmeticStatic(const IndexedTokens& data, const string& outFile) {
     const vector<uint32_t>& T = data.ids;
     int sigma = data.fs.size();
@@ -1289,6 +1450,7 @@ EncodedData encode(const IndexedTokens& indexed, int algorithm, const string& co
     if (algorithm == ARITHMETIC_BACKWARD) return ArithmeticBackward(indexed, codeFile);
     if (algorithm == HUFFMAN_CANONICAL) return HuffmanCanonical(indexed, codeFile);
     if (algorithm == STATIC_ARITHMETIC) return ArithmeticStatic(indexed, codeFile);
+	if (algorithm == PPMC) return ArithmeticPPMC(indexed, codeFile);
     return ForwardTans(indexed, codeFile);
 }
 
@@ -1489,6 +1651,7 @@ void writeCompressed(const string& baseName,
 
         out.write((char*)&delim, 1);
 
+
         for (const auto& w : data.dictionary)
         {
             out.write(w.data(), w.size());
@@ -1564,6 +1727,159 @@ EncodedData readCompressed(const string& baseName, int& mode)
     }
 
     return { dict, freq, bitCount };
+}
+
+vector<uint32_t> PPMCdecode(
+    const EncodedData& data,
+    const string& baseName)
+{
+    BitReader br(
+        baseName + ".code",
+        data.bitCount);
+
+    const int sigma = data.freq.size();
+    const int n = input_size;
+
+    vector<uint32_t> count(sigma, 0);
+
+    Fenwick fw(sigma + 1);
+
+    fw.add(sigma, 1);
+
+    uint32_t distinct = 0;
+
+    const uint64_t TOP = 0xFFFFFFFFULL;
+    const uint64_t HALF = 1ULL << 31;
+    const uint64_t QUARTER = 1ULL << 30;
+
+    uint64_t low = 0;
+    uint64_t high = TOP;
+    uint64_t code = 0;
+
+    for (int i = 0; i < 32; ++i)
+    {
+        int b = br.readBitmsb();
+        code = (code << 1) | b;
+    }
+
+    auto renorm = [&]()
+        {
+            while (true)
+            {
+                if (high < HALF)
+                {
+                }
+                else if (low >= HALF)
+                {
+                    low -= HALF;
+                    high -= HALF;
+                    code -= HALF;
+                }
+                else if (low >= QUARTER &&
+                    high < 3 * QUARTER)
+                {
+                    low -= QUARTER;
+                    high -= QUARTER;
+                    code -= QUARTER;
+                }
+                else
+                {
+                    break;
+                }
+
+                low <<= 1;
+                high = (high << 1) | 1;
+                code = (code << 1) | br.readBitmsb();
+            }
+        };
+
+    vector<uint32_t> result(n);
+    for (int i = 0; i < n; ++i)
+    {
+        const uint64_t total = fw.total;
+
+        const uint64_t range =
+            high - low + 1;
+
+        const uint64_t scaled =
+            ((code - low + 1) * total - 1) /
+            range;
+
+        const int s1 = fw.find(scaled);
+
+        if (s1 == sigma)
+        {
+
+            const uint64_t lowCum =
+                fw.sum(sigma - 1);
+
+            const uint64_t highCum =
+                fw.sum(sigma);
+
+            high = low +
+                (range * highCum) / total - 1;
+
+            low = low +
+                (range * lowCum) / total;
+
+            renorm();
+
+            const uint64_t literalRange =
+                high - low + 1;
+
+            const uint64_t symbol =
+                ((code - low + 1) * sigma - 1) /
+                literalRange;
+
+
+            high = low +
+                (literalRange * (symbol + 1)) /
+                sigma -
+                1;
+
+            low = low +
+                (literalRange * symbol) /
+                sigma;
+
+            renorm();
+
+            result[i] = symbol;
+
+            count[symbol] = 1;
+            fw.add(symbol, 1);
+
+            ++distinct;
+
+            fw.add(sigma, 1);
+
+        }
+
+        else
+        {
+
+            const uint64_t lowCum =
+                fw.sum(s1 - 1);
+
+            const uint64_t highCum =
+                fw.sum(s1);
+
+            high = low +
+                (range * highCum) / total - 1;
+
+            low = low +
+                (range * lowCum) / total;
+
+            renorm();
+
+            result[i] =
+                static_cast<uint32_t>(s1);
+
+            ++count[s1];
+            fw.add(s1, 1);
+        }
+    }
+
+    return result;
 }
 
 vector<uint32_t> FACdecode(const EncodedData& data, const string& baseName)
@@ -1655,6 +1971,8 @@ vector<uint32_t> FACdecode(const EncodedData& data, const string& baseName)
 
     return result;
 }
+
+
 
 vector<uint32_t> BACdecode(const EncodedData& data, const string& baseName)
 {
@@ -1849,6 +2167,7 @@ string algorithmName(int algorithm)
     if (algorithm == ARITHMETIC_BACKWARD) return "Arithmetic Backward";
     if (algorithm == HUFFMAN_CANONICAL) return "Huffman Canonical";
     if (algorithm == STATIC_ARITHMETIC) return "Static Arithmetic";
+	if (algorithm == PPMC) return "PPMC";
     return "Unknown";
 }
 
@@ -2016,7 +2335,8 @@ bool hasDecoder(int algorithm)
         algorithm == ARITHMETIC_FORWARD ||
         algorithm == STATIC_ARITHMETIC ||
         algorithm == ARITHMETIC_BACKWARD ||
-        algorithm == HUFFMAN_CANONICAL;
+        algorithm == HUFFMAN_CANONICAL ||
+        algorithm == PPMC;
 }
 
 vector<uint32_t> decodeByAlgorithm(const EncodedData& data, const string& baseName, int algorithm)
@@ -2028,6 +2348,7 @@ vector<uint32_t> decodeByAlgorithm(const EncodedData& data, const string& baseNa
 	if (algorithm == ARITHMETIC_BACKWARD) return BACdecode(data, baseName);
 	if (algorithm == STATIC_ARITHMETIC) return SACdecode(data, baseName);
     if (algorithm == HUFFMAN_CANONICAL) return HuffmanCanonicaldecode(data, baseName);
+    if (algorithm == PPMC) return PPMCdecode(data, baseName);
     return {};
 }
 
@@ -2209,6 +2530,69 @@ void DeletePPMDArtifacts()
 	}
 }
 
+int LCP(string a, string b) {
+    int i;
+    for (i = 0; (i < a.length()) && (i < b.length()) && (a[i] == b[i]); i++);
+    return i;
+}
+
+//==================== POM ===================
+void writeFile(string path, uint32_t* file, uint32_t fileN)
+{
+    FILE* out = nullptr;
+    errno_t err = fopen_s(&out, path.c_str(), "wb");
+    if (err != 0) {
+        std::cerr << "Error opening file: " << path << "\n";
+        return;
+    }
+    fwrite(file, sizeof(uint32_t), fileN, out);
+    fclose(out);
+}
+
+void POM(string i_file_name, string o_file_name, uint32_t D) {
+    vector<uint32_t> common(D), new_l(D);
+    string word, prev_word, current_word = "";
+    uint32_t i = 0;
+    ifstream ifile(i_file_name, std::ios::binary);
+    ofstream ofile(o_file_name + ".txt", std::ios::binary);
+    uint8_t delimeter;
+	uint8_t byte;
+	ifile.seekg(2 * sizeof(int), std::ios::beg);
+    ifile >> delimeter;
+    while (ifile >> byte) {
+        if (byte == delimeter) {
+            word = current_word;
+			current_word = "";
+        }
+		else {
+			current_word += byte;
+			continue;
+		}
+        int lcp = common[i] = LCP(prev_word, word);
+        prev_word = word;
+        new_l[i] = word.length() - lcp;
+        ofile << word.substr(lcp, new_l[i]);
+        i++;
+    }
+    cout << "Words: " << i << endl;
+    writeFile(o_file_name + "_lcp", common.data(), i);
+    writeFile(o_file_name + "_ln", new_l.data(), i);
+}
+
+void write_ids(const string& filename, const vector<uint32_t>& ids) {
+	// Write the vector of IDs to a text file, one ID per line
+	std::ofstream out(filename);
+	if (!out) {
+		std::cerr << "Error opening file for writing: " << filename << std::endl;
+		return;
+	}
+	for (const auto& id : ids) {
+		out << id << std::endl;
+	}
+	out.close();
+}
+
+
 void printUsage()
 {
     cout << "Usage: MyCompressor <command> <input> [mode] [compression_algorithm]\n";
@@ -2226,7 +2610,7 @@ void printUsage()
         cout << "  " << a << " - " << algorithmName(a) << "\n";
 }
 int main(int argc, char* argv[]) {
-    int N = 50;
+    int N = 1;
     if (argc < 2) {
         printUsage();
         return 0;
@@ -2253,7 +2637,7 @@ int main(int argc, char* argv[]) {
                 continue;
             }
 
-            for (int mode = CHARWISE; mode <= WORDS; mode++) {
+            for (int mode = WORDS; mode <= WORDS; mode++) {
                 cout << "Tokenizing " << input << " with " << tokenizationName(mode) << " tokenization...\n";
                 auto tokens = tokenize(text, mode);
 
@@ -2281,6 +2665,8 @@ int main(int argc, char* argv[]) {
                         rec.compressSeconds = chrono::duration<double>(cEnd - cStart).count() / N;
                         rec.codeBytes = compressedSize(data) + 8 + ((algorithm == HUFFMAN_CANONICAL || algorithm == ARITHMETIC_BACKWARD || algorithm == UNIFORM_TANS || algorithm == RANGED_TANS) ? 8 : 0); // add bitcount and original size of input or final state, if neccesary
                         writeCompressed(baseName, data, mode);
+
+                        POM(baseName + ".dict", baseName + ".pom", data.dictionary.size());
 
                         rec.dictPpmdBytes = compressWith7zPPMd(baseName + ".dict");
                         rec.freqPpmdBytes = (algorithm == FORWARD_TANS || algorithm == ARITHMETIC_BACKWARD) ? 0 : compressWith7zPPMd(baseName + ((algorithm == HUFFMAN_CANONICAL) ? ".code.tbl" : ".freq"));
