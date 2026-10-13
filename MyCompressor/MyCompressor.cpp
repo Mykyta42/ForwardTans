@@ -1917,12 +1917,31 @@ uint64_t compressWith7zPPMd(const string& fileName)
         "\"" + fileName + "\" "
         ">nul 2>&1\"";
 
-    //cout << "7z command: " << cmd << "\n";
-
     int rc = system(cmd.c_str());
 
-    /*cout << "7z rc = " << rc << "\n";
-    cout << "archive exists = " << fs::exists(archiveName) << "\n";*/
+
+    if (rc != 0 || !fs::exists(archiveName))
+        return 0;
+
+    return fileSizeOrZero(archiveName);
+}
+
+uint64_t compressWithZstd(const string& fileName)
+{
+    namespace fs = std::filesystem;
+
+    if (!fs::exists(fileName)) {
+        cout << "File not found: " << fileName << "\n";
+        return 0;
+    }
+
+    string archiveName = fileName + ".zst";
+    fs::remove(archiveName);
+
+    string cmd =
+        "cmd /C zstd --ultra -22 -q \"" + fileName + "\" -o \"" + archiveName + "\"";
+
+    int rc = system(cmd.c_str());
 
     if (rc != 0 || !fs::exists(archiveName))
         return 0;
@@ -1937,7 +1956,7 @@ struct BenchmarkRecord
     int algorithm;
 
     uint64_t codeBytes = 0;             // size of the .code part only
-    uint64_t dictPpmdBytes = 0;         // size of .dict compressed separately by 7-Zip PPMd
+    uint64_t dictBytes = 0;             // size of .dict compressed separately by 7-Zip PPMd or tar zstd
     uint64_t freqPpmdBytes = 0;         // size of .freq compressed separately by 7-Zip PPMd
     uint64_t totalBytes = 0;            // codeBytes + dictPpmdBytes + freqPpmdBytes
 
@@ -2003,7 +2022,7 @@ void writeOneMetricTable(ofstream& out, int& r, const string& title,
                 });
             if (it == rows.end()) continue;
             if (metric == 1 && it->codeBytes > 0) cellNum(r, a + 1, (double)it->codeBytes);
-            else if (metric == 2 && it->dictPpmdBytes > 0) cellNum(r, a + 1, (double)it->dictPpmdBytes);
+            else if (metric == 2 && it->dictBytes > 0) cellNum(r, a + 1, (double)it->dictBytes);
             else if (metric == 3 && it->freqPpmdBytes > 0) cellNum(r, a + 1, (double)it->freqPpmdBytes);
             else if (metric == 4 && it->totalBytes > 0) cellNum(r, a + 1, (double)it->totalBytes);
             else if (metric == 5 && it->compressSeconds >= 0.0) cellNum(r, a + 1, it->compressSeconds);
@@ -2022,8 +2041,8 @@ void writeWorksheetXml(const string& fileName, const vector<BenchmarkRecord>& ro
     out << "<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">\n<sheetData>\n";
     int r = 1;
     writeOneMetricTable(out, r, tokenizationName(mode) + ": code size, bytes", rows, mode, 1);
-    writeOneMetricTable(out, r, tokenizationName(mode) + ": dictionary size after 7-Zip PPMd -mx=9, bytes", rows, mode, 2);
-    writeOneMetricTable(out, r, tokenizationName(mode) + ": frequency table size after 7-Zip PPMd -mx=9, bytes", rows, mode, 3);
+    writeOneMetricTable(out, r, tokenizationName(mode) + ": dictionary size after compression, bytes", rows, mode, 2);
+    writeOneMetricTable(out, r, tokenizationName(mode) + ": frequency table size after compression, bytes", rows, mode, 3);
     writeOneMetricTable(out, r, tokenizationName(mode) + ": total size = code + compressed dictionary + compressed frequencies, bytes", rows, mode, 4);
     writeOneMetricTable(out, r, tokenizationName(mode) + ": compression time, seconds", rows, mode, 5);
     writeOneMetricTable(out, r, tokenizationName(mode) + ": decompression time, seconds", rows, mode, 6);
@@ -2061,7 +2080,7 @@ bool writeXlsxReport(const string& outName, const vector<BenchmarkRecord>& rows)
         out << "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>"
             << "<workbook xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><sheets>";
         int sid = 1;
-        for (int mode = CHARWISE; mode <= WORDS; mode++)
+        for (int mode = WORDS; mode <= WORDS; mode++)
         {
             out << "<sheet name=\"" << xmlEscape(tokenizationName(mode)) << "\" sheetId=\"" << sid << "\" r:id=\"rId" << sid << "\"/>";
             sid++;
@@ -2146,6 +2165,22 @@ void DeletePPMDArtifacts()
 	}
 }
 
+void DeleteZstdArtifacts()
+{
+    // delete any .tar.zstd files in the current directory
+    for (const auto& entry : std::filesystem::directory_iterator(std::filesystem::current_path()))
+    {
+        if (entry.is_regular_file() && entry.path().string().find(".zst") != std::string::npos)
+        {
+            std::error_code ec;
+            std::filesystem::remove(entry.path(), ec);
+            if (ec) {
+                std::cerr << "Warning: Could not delete " << entry.path() << ": " << ec.message() << "\n";
+            }
+        }
+    }
+}
+
 void write_ids(const string& filename, const vector<uint32_t>& ids) {
 	// Write the vector of IDs to a text file, one ID per line
 	std::ofstream out(filename);
@@ -2206,7 +2241,7 @@ int main(int argc, char* argv[]) {
                 cout << "Tokenizing " << input << " with " << tokenizationName(mode) << " tokenization...\n";
                 auto tokens = tokenize(text, mode);
 
-                for (int algorithm = FORWARD_TANS; algorithm <= FORWARD_TANS; algorithm++) if (hasDecoder(algorithm)) {
+                for (int algorithm = UNIFORM_TANS; algorithm <= STATIC_ARITHMETIC; algorithm++) if (hasDecoder(algorithm)) {
                     cout << "  " << algorithmName(algorithm) << "..." << flush;
 
                     BenchmarkRecord rec;
@@ -2231,9 +2266,9 @@ int main(int argc, char* argv[]) {
                         rec.codeBytes = compressedSize(data) + 8 + ((algorithm == HUFFMAN_CANONICAL || algorithm == ARITHMETIC_BACKWARD || algorithm == UNIFORM_TANS || algorithm == RANGED_TANS) ? 8 : 0); // add bitcount and original size of input or final state, if neccesary
                         writeCompressed(baseName, data, mode);
 
-                        rec.dictPpmdBytes = compressWith7zPPMd(baseName + ".dict");
+                        rec.dictBytes = (algorithm == FORWARD_TANS || algorithm == ARITHMETIC_FORWARD || algorithm == HUFFMAN_CANONICAL) ? compressWith7zPPMd(baseName + ".dict") : compressWithZstd(baseName + ".dict");
                         rec.freqPpmdBytes = (algorithm == FORWARD_TANS || algorithm == ARITHMETIC_BACKWARD) ? 0 : compressWith7zPPMd(baseName + ((algorithm == HUFFMAN_CANONICAL) ? ".code.tbl" : ".freq"));
-                        rec.totalBytes = rec.codeBytes + rec.dictPpmdBytes + rec.freqPpmdBytes;
+                        rec.totalBytes = rec.codeBytes + rec.dictBytes + rec.freqPpmdBytes;
 
                         int readMode;
                         EncodedData readData = readCompressed(baseName, readMode);
@@ -2259,6 +2294,7 @@ int main(int argc, char* argv[]) {
             }
         }
 		DeletePPMDArtifacts();
+        DeleteZstdArtifacts();
         if (!writeXlsxReport(reportName, records)) {
             cerr << "Could not create " << reportName << ". On Windows this requires PowerShell Compress-Archive.\n";
             return 1;
