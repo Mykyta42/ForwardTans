@@ -2,6 +2,9 @@
 
 My try for implementing an adaptive version of Tabled Asymmetric Numeral Systems (TANS).
 
-For testing an individual entropy encoder use "benchmark" option with tokenization.
+For testing all entropy encoders use "benchmark-xlsx" option.
 
-More detailed explanation pops out in case of an invalid input.
+For extracting the sequences of tokens indices for external analysis use "extract" option.
+
+More detailed explanation pops out in a case of an invalid input.
+
